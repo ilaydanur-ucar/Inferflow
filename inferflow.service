@@ -1,0 +1,22 @@
+[Unit]
+Description=InferFlow - Docker Compose ile ayaga kalkan ML inference servisi
+# docker.service diye bir systemd unit'i burada yok: Docker Desktop'in
+# WSL entegrasyonu soketi Windows tarafindan forward ediyor, native bir
+# systemd servisi degil. O yuzden ona bagimlilik eklemiyoruz.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ilayd
+WorkingDirectory=%h/Inferflow
+ExecStart=/usr/bin/docker compose up
+ExecStop=/usr/bin/docker compose down
+# Windows acilisinda Docker Desktop henuz hazir olmayabilir; ilk
+# denemede "docker compose up" basarisiz olursa systemd bunu birkac
+# kez otomatik tekrar dener, Desktop hazir olunca servis ayaga kalkar.
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
