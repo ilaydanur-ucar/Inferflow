@@ -1,2 +1,2 @@
 -r requirements.txt
-locust
+locust==2.46.4

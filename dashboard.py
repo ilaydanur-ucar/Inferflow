@@ -68,6 +68,38 @@ def _collect_stats(redis_client, job_queue_key, worker_key_prefix, num_workers, 
     }
 
 
+def _render_prometheus(stats):
+    """_collect_stats()'ın çıktısını Prometheus text exposition formatına
+    çevirir, böylece bir Prometheus sunucusu bu paneli scrape edebilir."""
+    lines = [
+        "# HELP inferflow_queue_depth Current depth of the Redis job queue.",
+        "# TYPE inferflow_queue_depth gauge",
+        f"inferflow_queue_depth {stats['queue_depth']}",
+        "# HELP inferflow_queue_max_depth Configured max queue depth before backpressure kicks in.",
+        "# TYPE inferflow_queue_max_depth gauge",
+        f"inferflow_queue_max_depth {stats['max_queue_depth']}",
+        "# HELP inferflow_redis_connected Whether the dashboard's Redis PING succeeded (1) or not (0).",
+        "# TYPE inferflow_redis_connected gauge",
+        f"inferflow_redis_connected {1 if stats['redis_connected'] else 0}",
+        "# HELP inferflow_uptime_seconds Seconds since the server process started.",
+        "# TYPE inferflow_uptime_seconds counter",
+        f"inferflow_uptime_seconds {stats['uptime_seconds']}",
+        "# HELP inferflow_worker_total_handled Total prediction jobs handled by a worker since start.",
+        "# TYPE inferflow_worker_total_handled counter",
+    ]
+    for w in stats["workers"]:
+        lines.append(f'inferflow_worker_total_handled{{worker_id="{w["id"]}"}} {w["total_handled"]}')
+    lines.append("# HELP inferflow_worker_alive Whether a worker's heartbeat is fresh (1) or stale/crashed (0).")
+    lines.append("# TYPE inferflow_worker_alive gauge")
+    for w in stats["workers"]:
+        lines.append(f'inferflow_worker_alive{{worker_id="{w["id"]}"}} {1 if w["alive"] else 0}')
+    lines.append("# HELP inferflow_worker_busy Whether a worker is currently processing a job (1) or idle (0).")
+    lines.append("# TYPE inferflow_worker_busy gauge")
+    for w in stats["workers"]:
+        lines.append(f'inferflow_worker_busy{{worker_id="{w["id"]}"}} {1 if w["status"] == "busy" else 0}')
+    return ("\n".join(lines) + "\n").encode()
+
+
 def _resolve_static_path(url_path):
     """`/`, `/assets/index-abc.js` gibi bir istek yolunu frontend/dist/client
     içindeki gerçek bir dosyaya çevirir. Path traversal'a (`/../../secrets`)
@@ -99,6 +131,16 @@ def _make_handler(redis_client, job_queue_key, worker_key_prefix, num_workers, m
                 ).encode()
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+
+            if self.path == "/metrics":
+                stats = _collect_stats(redis_client, job_queue_key, worker_key_prefix, num_workers, max_queue_depth, server_start_time)
+                body = _render_prometheus(stats)
+                self.send_response(200)
+                self.send_header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)

@@ -1,5 +1,5 @@
-onnxruntime
-numpy
-scikit-learn
-skl2onnx
-redis
+onnxruntime==1.29.0
+numpy==2.4.6
+scikit-learn==1.9.0
+skl2onnx==1.20.0
+redis==8.1.0
