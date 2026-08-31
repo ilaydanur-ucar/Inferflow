@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-and-smoke-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build and start stack
+        run: docker compose up --build -d
+
+      - name: Wait for dashboard to be healthy
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8080/stats > /dev/null; then
+              echo "dashboard is up"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "dashboard never became healthy"
+          docker compose logs
+          exit 1
+
+      - name: Smoke test - prediction round trip
+        run: |
+          response=$(exec 3<>/dev/tcp/127.0.0.1/9000
+            printf '{"input": [5.1, 3.5, 1.4, 0.2]}\n' >&3
+            timeout 5 cat <&3
+            exec 3<&-)
+          echo "response: $response"
+          echo "$response" | grep -q '"prediction"'
+
+      - name: Smoke test - /stats reflects the request
+        run: |
+          stats=$(curl -sf http://localhost:8080/stats)
+          echo "stats: $stats"
+          echo "$stats" | grep -q '"total_handled": 1'
+          echo "$stats" | grep -q '"redis_connected": true'
+
+      - name: Dump logs on failure
+        if: failure()
+        run: docker compose logs
+
+      - name: Tear down
+        if: always()
+        run: docker compose down
