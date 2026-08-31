@@ -1,0 +1,5 @@
+onnxruntime
+numpy
+scikit-learn
+skl2onnx
+redis
