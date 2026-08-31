@@ -4,7 +4,6 @@ Framework kullanmadan (Flask, FastAPI, gRPC yok) ham TCP socket'ler üzerine yaz
 
 Amaç production'a çıkacak bir ürün yapmak değildi. Amaç, normalde bir web framework'ünün ya da bir model-serving aracının (TensorFlow Serving, TorchServe, Triton) arkasında gizlenen şeyleri — istek kuyruğu, worker havuzu, backpressure, health check, container orkestrasyon — elle kurup gerçekten nasıl çalıştığını görmekti. "Framework'e yaslanmadan arkasında ne olduğunu anlıyorum" iddiasının arkasında durabilmek.
 
-Bu, yaklaşık bir aylık bir öğrenme projesidir. Aşağıdaki mimari, teknik detaylar ve kısıtlar projenin bittiği andaki gerçek durumunu yansıtıyor — planlanan değil, çalışan.
 
 ## Mimari
 
@@ -131,43 +130,4 @@ Not: p99.9 ve üzeri birkaç istek ~1000ms'e kadar çıktı (max: 1023ms) — WS
 - **İzleme:** Backend `/stats` JSON ve `/metrics` (Prometheus text format) endpoint'leri framework'süz (stdlib `http.server`); arayüz `frontend/`'de React 19 + TanStack Start + Tailwind CSS v4 ile yazılı, `fetch` ile saniyede bir güncelleniyor, `/stats`'a ulaşamazsa yerel bir simülasyona düşüp "SIM" rozetini gösteriyor
 - **CI:** GitHub Actions (`.github/workflows/ci.yml`) — her push/PR'da build + uçtan uca smoke test
 
-## Mimarinin gerçek darboğazı (öğrenilen ders)
 
-Backpressure kodu doğru çalışıyor, ama bu projede Redis kuyruğunu **gerçek yükle** doldurmak neredeyse imkansız — `predict()` (küçük bir RandomForest, tek örnek) sub-milisaniye sürüyor, 4 tahmin worker'ı bunu anında tüketiyor.
-
-Asıl darboğaz Redis değil, `NUM_SOCKET_WORKERS=4`: aynı anda en fazla 4 TCP bağlantısı okunup Redis'e iş olarak yazılabiliyor. 50 eşzamanlı Locust kullanıcısıyla test edildiğinde, 46'sı Redis'e hiç ulaşmadan yerel `request_queue`'da (Python'ın kendi `queue.Queue`'su) bekliyor. Backpressure kod yolunu gerçekten tetiklemek için Redis'e doğrudan (bir Lua script ile, atomik olarak) 50.000 sahte iş yazıp yapay bir backlog oluşturmak gerekti — sadece o zaman gerçek bir istek `"server busy"` yanıtı aldı.
-
-Bunun anlamı: bu spesifik sistemde darboğaz kuyrukta değil, kuyruğa girişte. Model çok daha ağır olsaydı (örneğin bir LLM inference'ı, network round-trip'i olan bir dış servis çağrısı) ya da `NUM_SOCKET_WORKERS` sayısı artırılsaydı, backpressure gerçek koşullarda da devreye girerdi. Sistemin nerede tıkanacağını bilmek, "her yere kuyruk koydum" demekten daha değerli.
-
-## Karşılaşılan zorluklar ve çözümleri
-
-- **`HOST=127.0.0.1` container içinde dışarıdan erişilemiyordu** — Docker'ın port yönlendirmesi container'ın loopback'ine değil, kendi network arayüzüne ulaşıyor. Çözüm: `HOST` env var'a bağlandı, Dockerfile'da `ENV HOST=0.0.0.0`.
-- **`docker compose up` sonrası log hiç görünmüyordu** — Python, TTY olmayan bir ortamda stdout'u buffer'lıyor; sunucu hiç çıkmadığı için buffer flush edilmiyordu. Çözüm: `ENV PYTHONUNBUFFERED=1`.
-- **Redis-backed worker'lar birkaç saniye içinde sessizce çöküyordu** — redis-py 8.x'te istemcinin varsayılan `socket_timeout`'u 5 saniye (önceki sürümlerde sınırsızdı). `BRPOP` sunucu tarafında 5-10 saniyeye kadar bloklayabiliyordu; istemci kendi soket okumasında daha erken pes edip sahte bir `TimeoutError` fırlatıyordu. Kök nedeni, container içine girip Redis client'ın gerçek `connection_kwargs`'ını inceleyerek bulduk. Çözüm: `socket_timeout=None` — bloklama süresini zaten `BRPOP`'un kendi `timeout` parametresi sınırlıyor.
-- **İstemci bağlanıp veri göndermezse worker sonsuza kadar kilitleniyordu** — Çözüm: `conn.settimeout(30)`, `socket.timeout` yakalanıp bağlantı temiz kapatılıyor.
-- **Redis hazır olmadan app başlıyor, ilk isteklerde bağlantı hatası veriyordu** — Çözüm: `docker-compose.yml`'de Redis'e `healthcheck`, app'e `depends_on: condition: service_healthy`.
-
-## Bilinen kısıtlar ve kapsam dışı bırakılanlar
-
-Bunların hiçbiri "unutuldu" değil — zaman ve kapsam sınırı içinde bilinçli olarak yapılmadı:
-
-- **GPU / LLM inference** — proje CPU'da, küçük klasik ML modelleri (RandomForest gibi) için tasarlandı.
-- **Kubernetes / orkestrasyon** — bu proje boyutu için Docker Compose yeterli.
-- **Authentication / authorization** — geliştirme ortamı, localhost varsayımı; `/stats`, `/metrics` ve tahmin soketi kimlik doğrulaması olmadan açık.
-- **Gerçek epoll / multi-process worker havuzu** — thread + kuyruk deseni öğrenme hedefi için yeterliydi; tam bir epoll implementasyonu ayrı bir mimari denemesi olurdu. Bunun somut sonucu: darboğaz hâlâ `NUM_SOCKET_WORKERS=4` — per-IP limiti bunu tek bir istemcinin tekeline almasını zorlaştırır ama havuzun kendisini büyütmez.
-- **Birim testler** — zaman kısıtı nedeniyle Locust ile yük/entegrasyon testine ve CI'daki uçtan uca smoke test'e odaklanıldı, birim test yazılmadı.
-
-## Gelecek geliştirmeler
-
-- Model versiyonlama
-- Aynı anda birden fazla modeli servis edebilme (parametrik model seçimi)
-- Redis için persistence/auth (`requirepass`, AOF) — şu an açık ve kalıcı değil
-
-## Öğrenilen şeyler
-
-- TCP socket programlama (bare metal, framework olmadan)
-- Producer-consumer deseni ve kuyruk-tabanlı iş dağıtımı
-- Container orkestrasyon (Docker Compose, health check bağımlılıkları)
-- ONNX ile framework-bağımsız model serving
-- Backpressure ve yük yönetimi
-- Bir sistemin gerçek darboğazının nerede olduğunu ölçerek bulmak — varsayarak değil
