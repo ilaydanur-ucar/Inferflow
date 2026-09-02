@@ -115,7 +115,7 @@ InferFlow HTTP değil ham TCP konuştuğu için, `locustfile.py` Locust'un HTTP 
 | Test Süresi | 60s |
 | Eşzamanlı Kullanıcı | 50 (ramp-up: 10/s) |
 
-Not: p99.9 ve üzeri birkaç istek ~1000ms'e kadar çıktı (max: 1023ms) — WSL2 üzerinde Docker Desktop'ın network forwarding katmanından kaynaklanan ara sıra bir gecikme sıçraması olduğunu düşünüyoruz, ama kesin sebep araştırılmadı; ana kütlenin (%99'u) 320ms altında kaldığını not ediyoruz.
+
 
 ## Kullanılan teknolojiler
 
